@@ -11,6 +11,7 @@ Dropout = keras.layers.Dropout
 load_model = keras.models.load_model
 import ta
 import os
+from tqdm import tqdm
 
 
 class BatchStockPredictor:
@@ -30,7 +31,7 @@ class BatchStockPredictor:
     def load_stock_data(self, symbol):
         file_path = os.path.join(self.data_dir, f"{symbol}.csv")
         df = pd.read_csv(file_path)
-        df['Date'] = pd.to_datetime(df['Date'])
+        df['Date'] = pd.to_datetime(df['Date'], utc=True)
         return df.sort_values('Date')
     
     def prepare_data(self, df):
@@ -38,14 +39,20 @@ class BatchStockPredictor:
         df['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20)
         df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
         df['MACD'] = ta.trend.macd_diff(df['Close'])
-        df['BB_upper'], df['BB_middle'], df['BB_lower'] = ta.volatility.bollinger_bands(df['Close'])
+        
+        # Update Bollinger Bands calculation
+        bollinger = ta.volatility.BollingerBands(df['Close'])
+        df['BB_upper'] = bollinger.bollinger_hband()
+        df['BB_middle'] = bollinger.bollinger_mavg()
+        df['BB_lower'] = bollinger.bollinger_lband()
+        
         df['Price_Change'] = df['Close'].pct_change()
         df['Target'] = (df['Close'].shift(-self.prediction_days) > df['Close']).astype(int)
         
         df.dropna(inplace=True)
         
         features = ['Open', 'High', 'Low', 'Close', 'Volume', 
-                   'SMA_20', 'RSI', 'MACD', 'BB_upper', 'BB_lower', 'Price_Change']
+                    'SMA_20', 'RSI', 'MACD', 'BB_upper', 'BB_lower', 'Price_Change']
         
         scaled_data = self.scaler.fit_transform(df[features])
         
@@ -60,7 +67,8 @@ class BatchStockPredictor:
     
     def build_model(self, input_shape):
         model = Sequential([
-            LSTM(50, return_sequences=True, input_shape=input_shape),
+            keras.layers.Input(shape=input_shape),
+            LSTM(50, return_sequences=True),
             Dropout(0.2),
             LSTM(50, return_sequences=False),
             Dropout(0.2),
@@ -234,12 +242,12 @@ class BatchStockPredictor:
         self.model = load_model(filepath)
 
 # Example usage:
-"""
+
 # Initialize predictor
-predictor = BatchStockPredictor(data_dir='stock_data', batch_size=32)
+predictor = BatchStockPredictor(data_dir='data', batch_size=32)
 
 # Get list of stock symbols from directory
-symbols = [f.split('.')[0] for f in os.listdir('stock_data') if f.endswith('.csv')]
+symbols = [f.split('.')[0] for f in os.listdir('data') if f.endswith('.csv')]
 
 # Train model
 history = predictor.train_on_stocks(symbols, epochs=50)
@@ -250,4 +258,3 @@ print(predictions.tail())
 
 # Save the model
 predictor.save_model('batch_stock_predictor_model.h5')
-"""
