@@ -9,13 +9,22 @@ LSTM = keras.layers.LSTM
 Dense = keras.layers.Dense
 Dropout = keras.layers.Dropout
 import ta
+import os
 
-class StockPredictor:
-    def __init__(self, prediction_days=3):
+
+class MultiStockPredictor:
+    def __init__(self, data_dir, prediction_days=3):
+        self.data_dir = data_dir
         self.prediction_days = prediction_days
         self.scaler = MinMaxScaler()
         self.model = None
         
+    def load_stock_data(self, symbol):
+        file_path = os.path.join(self.data_dir, f"{symbol}.csv")
+        df = pd.read_csv(file_path)
+        df['Date'] = pd.to_datetime(df['Date'])
+        return df.sort_values('Date')
+    
     def prepare_data(self, df):
         # Calculate technical indicators
         df['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20)
@@ -39,7 +48,7 @@ class StockPredictor:
         
         # Prepare sequences
         X, y = [], []
-        sequence_length = 10  # Look back period
+        sequence_length = 10
         
         for i in range(sequence_length, len(scaled_data) - self.prediction_days):
             X.append(scaled_data[i-sequence_length:i])
@@ -60,8 +69,9 @@ class StockPredictor:
         model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
         self.model = model
         return model
-    
-    def train(self, df, validation_split=0.2, epochs=50, batch_size=32):
+
+    def train_on_stock(self, symbol, validation_split=0.2, epochs=50, batch_size=32):
+        df = self.load_stock_data(symbol)
         X, y = self.prepare_data(df)
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=validation_split, shuffle=False)
         
@@ -78,28 +88,67 @@ class StockPredictor:
         
         return history, (X_test, y_test)
     
-    def predict(self, df):
+    def train_on_multiple_stocks(self, symbols, validation_split=0.2, epochs=50, batch_size=32):
+        combined_X = []
+        combined_y = []
+        
+        for symbol in symbols:
+            df = self.load_stock_data(symbol)
+            X, y = self.prepare_data(df)
+            combined_X.append(X)
+            combined_y.append(y)
+        
+        X = np.concatenate(combined_X)
+        y = np.concatenate(combined_y)
+        
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=validation_split, shuffle=True)
+        
+        if not self.model:
+            self.build_model(input_shape=(X.shape[1], X.shape[2]))
+        
+        history = self.model.fit(
+            X_train, y_train,
+            validation_data=(X_test, y_test),
+            epochs=epochs,
+            batch_size=batch_size,
+            verbose=1
+        )
+        
+        return history, (X_test, y_test)
+    
+    def predict_stock(self, symbol):
+        df = self.load_stock_data(symbol)
         X, _ = self.prepare_data(df)
         predictions = self.model.predict(X)
-        return predictions > 0.5
+        
+        results = pd.DataFrame({
+            'Date': df['Date'].iloc[10:].reset_index(drop=True),
+            'Close': df['Close'].iloc[10:].reset_index(drop=True),
+            'Prediction': predictions.flatten() > 0.5,
+            'Confidence': predictions.flatten()
+        })
+        
+        return results
+    
+    def save_model(self, filepath):
+        self.model.save(filepath)
+    
+    def load_saved_model(self, filepath):
+        self.model = load_model(filepath)
 
 # Example usage:
 """
-# Load your data
-df = pd.read_csv('stock_data.csv')
-df['Date'] = pd.to_datetime(df['Date'])
-df = df.sort_values('Date')
+# Initialize predictor
+predictor = MultiStockPredictor(data_dir='stock_data')
 
-# Initialize and train the model
-predictor = StockPredictor(prediction_days=3)
-history, test_data = predictor.train(df)
+# Train on multiple stocks
+stock_symbols = ['AAPL', 'GOOGL', 'MSFT']
+history, test_data = predictor.train_on_multiple_stocks(stock_symbols, epochs=50)
 
-# Make predictions
-predictions = predictor.predict(df)
+# Make predictions for a specific stock
+predictions = predictor.predict_stock('AAPL')
+print(predictions.tail())
 
-# Calculate accuracy
-X_test, y_test = test_data
-test_predictions = predictor.predict(pd.DataFrame(X_test))
-accuracy = np.mean(test_predictions == y_test)
-print(f"Test Accuracy: {accuracy:.2f}")
+# Save the model
+predictor.save_model('stock_predictor_model.h5')
 """
